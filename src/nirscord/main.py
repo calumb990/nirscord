@@ -21,7 +21,7 @@ from h5py import Dataset
 import websockets
 from websockets import ServerConnection
 
-from pylsl import StreamInlet, resolve_byprop
+from pylsl import StreamInlet, resolve_byprop, local_clock, proc_clocksync
 
 from rich.console import Text
 from rich.columns import Columns
@@ -132,7 +132,6 @@ class RecorderApp(App):
                 chunks=(BATCH_SIZE,),
                 dtype=np.dtype([
                     ("timestamp", "f8"),
-                    ("uuid", "S16"),
                     ("event", "S16"),
                     ("value", "S256"),
                 ])
@@ -181,7 +180,7 @@ class RecorderApp(App):
                 .write_output(Text("Failed to connect to LSL.", style="red"))
 
         # Connect to the first LSL stream
-        inlet = StreamInlet(streams[0])
+        inlet = StreamInlet(streams[0], processing_flags=proc_clocksync)
 
         self.query_one("CommandLine", CommandLine).write_output(
             Text("Successfully connected to LSL.", style="green")
@@ -204,7 +203,7 @@ class RecorderApp(App):
 
             # Collect samples into a certain batch
             while len(samples) < BATCH_SIZE:
-                channels, timestamp = inlet.pull_sample(timeout=3.0)
+                channels, timestamp = inlet.pull_sample()
 
                 # Add sample from LSL stream
                 channels.append(timestamp)
@@ -361,7 +360,7 @@ class ExperimentUI(HorizontalGroup):
 
         for client, ws_uuid in self.ws_clients:
             await client.send(f"/{page}")
-            await self._record_event(ws_uuid.bytes, "switch", page)
+            await self._record_event("switch", page)
 
     @work(thread=True)
     def start_http_server(self):
@@ -393,17 +392,16 @@ class ExperimentUI(HorizontalGroup):
 
             async for message in websocket:
                 log(self.ws_logger, f"client {ws_uuid.hex[:8]}: {message}")
-                await self._record_event(ws_uuid.bytes, "client", message)
+                await self._record_event("client", message)
         finally:
             self.ws_clients.remove((websocket, ws_uuid))
 
-    async def _record_event(self, uuid_bytes: bytes, event: str, value: str):
+    async def _record_event(self, event: str, value: str):
         dataset: Dataset = cast(RecorderApp, self.app).h5_file["events"]
 
         # Append the event to the frames dataset
-        timestamp = datetime.now().timestamp()
         dataset.resize(dataset.shape[0] + 1, axis=0)
-        dataset[-1] = (timestamp, uuid_bytes, event, value)
+        dataset[-1] = (local_clock(), event, value)
 
 
 class RecordingUI(HorizontalGroup):
